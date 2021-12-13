@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 dirs = { version = "*" }
 open = { version = "*" }
+junction = { version = "*" }
 
 [dependencies.cursive]
 version = "*"

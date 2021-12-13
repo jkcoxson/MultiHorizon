@@ -1,9 +1,10 @@
 // jkcoxson
 
 use std::{
-    fs,
-    io::{self, Write},
+    fs::{self},
+    io::{self},
     path::Path,
+    process::Command,
 };
 
 use cursive::{
@@ -39,109 +40,77 @@ fn main() {
     // Get home directory
     let home_dir = dirs::home_dir().unwrap();
     let home_dir = home_dir.join("Documents");
-
-    // Check if Horizon Zero Dawn folder exists
-    let game_dir = home_dir.join(GAME_PATH.clone());
-    if !game_dir.exists() {
-        siv.add_layer(
-            cursive::views::Dialog::text("Horizon Zero Dawn folder not found.\n\nPlease make sure you have Horizon Zero Dawn installed and try again.".to_string())
-                .button("Ok", |s| s.quit()),
-        );
-        siv.run();
-        return;
-    }
+    let game_dir = home_dir.join(GAME_PATH);
 
     // Check if the MultiHorizon folder exists
-    let save_dir = home_dir.join(SAVE_PATH);
-    if !save_dir.exists() {
-        // Create directory
-        std::fs::create_dir_all(&save_dir).unwrap();
+    let save_path = home_dir.join(SAVE_PATH);
+    if !save_path.exists() {
+        fs::create_dir_all(&save_path).expect("Failed to create save path");
     }
 
-    // Determine what user is loaded
-    // Find a file in the game folder ending in .mhzd
-    let mut loaded_user: Option<String> = None;
-    for entry in fs::read_dir(&game_dir).unwrap() {
+    // Preflight checks of the current system
+    if game_dir.is_symlink() {
+        // Remove the symlink
+        fs::remove_dir(&game_dir).expect("Failed to remove symlink");
+    } else {
+        // Determine if it even exists
+        if game_dir.exists() {
+            // User is installed incorrectly
+            // Get new username
+            let username = text_prompt(
+                &mut siv,
+                "User is installed incorrectly. Please enter your username.",
+            );
+            // Create new path in save folder
+            let save_dir = save_path.join(username);
+            if !save_dir.exists() {
+                fs::create_dir_all(&save_dir).expect("Failed to create save path");
+            } else {
+                siv.add_layer(
+                    cursive::views::Dialog::text(
+                        "A user with that username already exists.\n\nPlease try again."
+                            .to_string(),
+                    )
+                    .button("Ok", |s| s.quit()),
+                );
+                siv.run();
+                return;
+            }
+            // Move game_dir to save_dir
+            recursive_move(&game_dir, &save_dir).unwrap();
+        } else {
+            // We gucci because nothing is installed
+        }
+    }
+
+    // Get list of users in save_dir
+    let mut users = Vec::new();
+    for entry in fs::read_dir(&save_path).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        let extension = match path.extension() {
-            Some(extension) => extension,
-            None => continue,
-        };
-        if extension == "mhzd" {
-            loaded_user = Some(
-                path.file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-                    .split('.')
-                    .next()
-                    .unwrap()
-                    .to_string(),
-            );
-
-            break;
+        if path.is_dir() {
+            users.push(path.file_name().unwrap().to_str().unwrap().to_string());
         }
-    }
-
-    // If no user is detected, ask the user for a username
-    if loaded_user.is_none() {
-        let username = text_prompt(&mut siv, "No user detected, please enter your username");
-
-        // Check to see if a folder with the same name exists in the save directory
-        let save_dir = save_dir.join(username.clone());
-        if save_dir.exists() {
-            siv.add_layer(
-                cursive::views::Dialog::text(
-                    "A user with that username already exists.\n\nPlease try again.".to_string(),
-                )
-                .button("Ok", |s| s.quit()),
-            );
-            siv.run();
-            return;
-        }
-
-        // Create user file
-        let game_dir = home_dir.join(GAME_PATH);
-        let user_file = game_dir.join(format!("{}.mhzd", username));
-        let mut file = fs::File::create(&user_file).unwrap();
-        file.write_all(b"").unwrap();
-
-        // Create new folder with username in save directory
-        std::fs::create_dir(&save_dir).unwrap();
-
-        move_to_save(username);
-    }
-
-    // Get list of users in the save dir
-    let mut users: Vec<String> = Vec::new();
-    for entry in fs::read_dir(&save_dir).unwrap() {
-        // If entry is not a directory, skip it
-        if !entry.as_ref().unwrap().file_type().unwrap().is_dir() {
-            continue;
-        }
-        let entry = entry.unwrap();
-        let path = entry.path();
-        let name = path.file_name().unwrap().to_str().unwrap().to_string();
-        users.push(name);
     }
     users.push("New User".to_string());
 
-    let selected_user = select_prompt(&mut siv, "Select a user", users);
-    if selected_user == "New User" {
-        // Unload current user
-        move_to_save(loaded_user.clone().unwrap());
-        // Remove all files in game folder
-        for entry in fs::read_dir(game_dir).unwrap() {
-            recursive_remove(&entry.unwrap().path()).unwrap();
+    // Get selected user
+    let mut selected_user = select_prompt(&mut siv, "Choose a user to load", users);
+
+    if selected_user == "New User".to_string() {
+        // Create new folder in save_dir
+        let new_user = text_prompt(&mut siv, "Enter a username");
+        if new_user == "New User".to_string() {
+            siv.add_layer(
+                cursive::views::Dialog::text("lol".to_string()).button("Ok", |s| s.quit()),
+            );
+            siv.run();
+            return;
         }
-
-        let username = text_prompt(&mut siv, "Enter a new username");
-
-        // Check to see if a folder with the same name exists in the save directory
-        let save_dir = save_dir.join(username.clone());
-        if save_dir.exists() {
+        let save_dir = save_path.join(&new_user);
+        if !save_dir.exists() {
+            fs::create_dir_all(&save_dir).expect("Failed to create save path");
+        } else {
             siv.add_layer(
                 cursive::views::Dialog::text(
                     "A user with that username already exists.\n\nPlease try again.".to_string(),
@@ -151,26 +120,13 @@ fn main() {
             siv.run();
             return;
         }
-
-        // Create user file
-        let game_dir = home_dir.join(GAME_PATH);
-        let user_file = game_dir.join(format!("{}.mhzd", username));
-        let mut file = fs::File::create(&user_file).unwrap();
-        file.write_all(b"").unwrap();
-
-        // Create new folder with username in save directory
-        std::fs::create_dir(&save_dir).unwrap();
-    } else {
-        // Load user
-        if selected_user != loaded_user.clone().unwrap() {
-            // Unload current user
-            move_to_save(loaded_user.unwrap());
-
-            // Load new user
-            move_to_game(selected_user.clone());
-        }
+        selected_user = new_user;
     }
 
+    // Create symlink from save_dir/selected_user/Horizon Zero Dawn to home_dir/Horizon Zero Dawn
+    let save_dir = save_path.join(selected_user);
+    let game_dir = home_dir.join(GAME_PATH);
+    create_symlink(&save_dir, &game_dir).unwrap();
     open::that("steam://rungameid/1151640").unwrap();
 }
 
@@ -246,63 +202,19 @@ fn select_prompt(siv: &mut Cursive, title: &str, options: Vec<String>) -> String
     rx.recv().unwrap()
 }
 
-fn move_to_save(username: String) {
-    let home_dir = dirs::home_dir().unwrap().join("Documents");
-    let save_dir = home_dir.join(SAVE_PATH).join(&username);
-    let game_dir = home_dir.join(GAME_PATH);
-
-    // Remove all files in the save directory
-    for entry in fs::read_dir(&save_dir).unwrap() {
-        recursive_remove(&entry.unwrap().path()).unwrap();
-    }
-
-    // Copy all files from game folder to save directory
-    for entry in fs::read_dir(game_dir).unwrap() {
-        match recursive_copy(
-            &entry.as_ref().unwrap().path(),
-            &save_dir.join(entry.unwrap().file_name()),
-        ) {
-            Err(e) => panic!("{}", e),
-            Ok(_) => {}
+fn recursive_move(src: &Path, dest: &Path) -> io::Result<()> {
+    for entry in src.read_dir()? {
+        let entry = entry?;
+        let src = entry.path();
+        let dest = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            fs::create_dir(&dest)?;
+            recursive_move(&src, &dest)?;
+        } else {
+            fs::copy(&src, &dest)?;
         }
     }
-}
-
-fn move_to_game(username: String) {
-    let home_dir = dirs::home_dir().unwrap().join("Documents");
-    let save_dir = home_dir.join(SAVE_PATH).join(&username);
-    let game_dir = home_dir.join(GAME_PATH);
-
-    // Remove all files in the game directory
-    for entry in fs::read_dir(&game_dir).unwrap() {
-        recursive_remove(&entry.unwrap().path()).unwrap();
-    }
-
-    // Copy all files from game folder to save directory
-    for entry in fs::read_dir(save_dir).unwrap() {
-        match recursive_copy(
-            &entry.as_ref().unwrap().path(),
-            &game_dir.join(entry.unwrap().file_name()),
-        ) {
-            Err(e) => panic!("{}", e),
-            Ok(_) => {}
-        }
-    }
-}
-
-fn recursive_copy(src: &Path, dest: &Path) -> io::Result<()> {
-    if src.is_dir() {
-        fs::create_dir(dest)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let src = entry.path();
-            let dest = dest.join(src.file_name().unwrap());
-            recursive_copy(&src, &dest)?;
-        }
-    } else {
-        fs::copy(src, dest)?;
-    }
-
+    recursive_remove(src)?;
     Ok(())
 }
 
@@ -318,5 +230,19 @@ fn recursive_remove(src: &Path) -> io::Result<()> {
         fs::remove_file(src)?;
     }
 
+    Ok(())
+}
+
+fn create_symlink(src: &Path, dest: &Path) -> io::Result<()> {
+    // Run the mklink command
+    Command::new("cmd")
+        .args(&[
+            "/C",
+            "mklink",
+            "/J",
+            dest.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ])
+        .spawn()?;
     Ok(())
 }
